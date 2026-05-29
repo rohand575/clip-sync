@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clipboard Sync</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 48px 16px;
+    }
+
+    .container { width: 100%; max-width: 700px; }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+
+    h1 { font-size: 1.4rem; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
+
+    .status { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: #888; }
+
+    .dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #555; flex-shrink: 0; transition: background 0.3s;
+    }
+    .dot.connected { background: #4caf50; }
+    .dot.syncing   { background: #ff9800; animation: pulse 0.9s infinite; }
+    .dot.offline   { background: #f44336; }
+
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+
+    textarea {
+      width: 100%; height: 280px;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      color: #e8e8e8;
+      font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+      font-size: 14px; line-height: 1.65;
+      padding: 16px; resize: vertical; outline: none;
+      transition: border-color 0.2s;
+    }
+    textarea:focus { border-color: #4a4a9a; }
+    textarea::placeholder { color: #3a3a5a; }
+
+    .action-bar {
+      display: flex; align-items: center;
+      justify-content: space-between;
+      margin-top: 12px;
+    }
+
+    .sync-time { font-size: 0.78rem; color: #555; }
+
+    button {
+      background: #22225a; color: #b0b0ff;
+      border: 1px solid #3a3a8a; border-radius: 6px;
+      padding: 8px 18px; font-size: 0.85rem; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    button:hover  { background: #33338a; }
+    button:active { background: #4444aa; }
+    button.ok     { color: #4caf50; border-color: #4caf50; }
+    button.err    { color: #f44336; border-color: #f44336; }
+
+    .room-row {
+      display: flex; align-items: center; gap: 8px; margin-top: 22px;
+    }
+    .room-label { font-size: 0.78rem; color: #555; white-space: nowrap; }
+
+    .room-url-input {
+      flex: 1; min-width: 0;
+      background: #0f0f22; border: 1px solid #2a2a4a; border-radius: 6px;
+      color: #666; font-size: 0.74rem; font-family: monospace;
+      padding: 7px 10px; outline: none;
+    }
+
+    .room-copy-btn { padding: 7px 12px; font-size: 0.78rem; white-space: nowrap; }
+
+    .footer {
+      margin-top: 16px; font-size: 0.73rem; color: #3a3a5a; text-align: center;
+    }
+
+    /* Config warning banner */
+    .config-warning {
+      background: #3a1a00; border: 1px solid #7a4400;
+      border-radius: 8px; padding: 14px 18px;
+      margin-bottom: 20px; font-size: 0.85rem; color: #ffaa55;
+      line-height: 1.5;
+    }
+    .config-warning strong { color: #ffcc77; }
+    .config-warning.hidden { display: none; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Clipboard Sync</h1>
+    <div class="status">
+      <div class="dot" id="dot"></div>
+      <span id="status-text">Connecting…</span>
+    </div>
+  </header>
+
+  <div class="config-warning" id="config-warning">
+    <strong>Firebase not configured.</strong> Open <code>index.html</code> in a text editor
+    and replace the placeholder values inside <code>firebaseConfig</code> with your own
+    Firebase project credentials. See the README / plan for step-by-step instructions.
+  </div>
+
+  <textarea
+    id="editor"
+    placeholder="Paste or type here — syncs instantly to any browser with this URL…"
+    spellcheck="false"
+  ></textarea>
+
+  <div class="action-bar">
+    <button id="copy-btn">Copy to Clipboard</button>
+    <span class="sync-time" id="sync-time"></span>
+  </div>
+
+  <div class="room-row">
+    <span class="room-label">Room URL:</span>
+    <input class="room-url-input" id="room-url" readonly title="Share this exact URL (including the # part) with your other machine">
+    <button class="room-copy-btn" id="room-copy-btn">Copy URL</button>
+  </div>
+
+  <div class="footer">🔒 End-to-end encrypted &nbsp;·&nbsp; Firebase stores ciphertext only</div>
+</div>
+
+<script type="module">
+  import { initializeApp }                    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getDatabase, ref, set, onValue }   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
+
+  // ── PASTE YOUR FIREBASE CONFIG HERE ─────────────────────────────────────────
+  const firebaseConfig = {
+    apiKey:            "AIzaSyAzq-gL1uXzSwar2Qx1PSRolCmLra4q0QY",
+    authDomain:        "clip-sync-d1589.firebaseapp.com",
+    databaseURL:       "https://clip-sync-d1589-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId:         "clip-sync-d1589",
+    storageBucket:     "clip-sync-d1589.firebasestorage.app",
+    messagingSenderId: "836963713503",
+    appId:             "1:836963713503:web:e78eeea0ab8066fdb8446a"
+  };
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const IS_CONFIGURED = !firebaseConfig.apiKey.startsWith("YOUR_");
+  document.getElementById('config-warning').classList.toggle('hidden', IS_CONFIGURED);
+
+  // Room ID: read from URL hash or generate a new UUID and set it
+  let roomId = location.hash.slice(1);
+  if (!roomId) {
+    roomId = crypto.randomUUID();
+    location.hash = roomId;
+  }
+
+  const roomUrl = location.href;
+  document.getElementById('room-url').value = roomUrl;
+
+  // Derive AES-256-GCM key from the room ID using PBKDF2
+  async function deriveKey(id) {
+    const enc = new TextEncoder();
+    const raw = await crypto.subtle.importKey('raw', enc.encode(id), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: enc.encode('clip-sync-v1'), iterations: 100_000, hash: 'SHA-256' },
+      raw,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  async function encrypt(key, text) {
+    const iv         = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+    const out        = new Uint8Array(12 + ciphertext.byteLength);
+    out.set(iv);
+    out.set(new Uint8Array(ciphertext), 12);
+    return btoa(String.fromCharCode(...out));
+  }
+
+  async function decrypt(key, b64) {
+    const buf        = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const plaintext  = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.slice(12));
+    return new TextDecoder().decode(plaintext);
+  }
+
+  // UI refs
+  const editor     = document.getElementById('editor');
+  const dot        = document.getElementById('dot');
+  const statusText = document.getElementById('status-text');
+  const syncTime   = document.getElementById('sync-time');
+
+  function setStatus(state, label) {
+    dot.className    = `dot ${state}`;
+    statusText.textContent = label;
+  }
+
+  let lastSyncMs    = null;
+  let isRemote      = false;    // prevent echo-loop when onValue fires
+  let debounce      = null;
+  let cryptoKey     = null;
+
+  // Tick "synced N ago"
+  setInterval(() => {
+    if (!lastSyncMs) return;
+    const s = Math.round((Date.now() - lastSyncMs) / 1000);
+    syncTime.textContent = s < 5 ? 'Synced just now' : `Synced ${s}s ago`;
+  }, 1000);
+
+  if (!IS_CONFIGURED) {
+    setStatus('offline', 'Not configured');
+  } else {
+    const app     = initializeApp(firebaseConfig);
+    const db      = getDatabase(app);
+    const clipRef = ref(db, `rooms/${roomId}/clip`);
+    const connRef = ref(db, '.info/connected');
+
+    // Connection state indicator
+    onValue(connRef, snap => {
+      if (snap.val()) setStatus('connected', 'Connected');
+      else            setStatus('offline',   'Offline');
+    });
+
+    // Derive key then start listening for incoming data
+    deriveKey(roomId).then(key => {
+      cryptoKey = key;
+
+      onValue(clipRef, async snap => {
+        const val = snap.val();
+        if (!val) return;
+        try {
+          const plain = await decrypt(cryptoKey, val);
+          if (plain !== editor.value) {
+            isRemote = true;
+            editor.value = plain;
+            isRemote = false;
+          }
+          lastSyncMs = Date.now();
+        } catch {
+          // Wrong key or corrupt — ignore
+        }
+      });
+    });
+
+    // Outgoing: debounced on every keystroke / paste
+    editor.addEventListener('input', () => {
+      if (isRemote || !cryptoKey) return;
+      setStatus('syncing', 'Syncing…');
+      clearTimeout(debounce);
+      debounce = setTimeout(async () => {
+        try {
+          await set(clipRef, await encrypt(cryptoKey, editor.value));
+          lastSyncMs = Date.now();
+          setStatus('connected', 'Connected');
+        } catch {
+          setStatus('offline', 'Write failed');
+        }
+      }, 300);
+    });
+  }
+
+  // Copy content to clipboard
+  async function flashBtn(btn, ok, okLabel, failLabel, resetLabel) {
+    try {
+      await ok();
+      btn.textContent = okLabel;
+      btn.classList.add('ok');
+    } catch {
+      btn.textContent = failLabel;
+      btn.classList.add('err');
+    }
+    setTimeout(() => { btn.textContent = resetLabel; btn.classList.remove('ok', 'err'); }, 1600);
+  }
+
+  document.getElementById('copy-btn').addEventListener('click', btn =>
+    flashBtn(btn.currentTarget,
+      () => navigator.clipboard.writeText(editor.value),
+      'Copied!', 'Permission denied', 'Copy to Clipboard'));
+
+  document.getElementById('room-copy-btn').addEventListener('click', btn =>
+    flashBtn(btn.currentTarget,
+      () => navigator.clipboard.writeText(roomUrl),
+      'Copied!', 'Failed', 'Copy URL'));
+</script>
+</body>
+</html>
